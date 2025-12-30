@@ -110,6 +110,7 @@ export function useCozeChat(sessionName: string) {
   const chatToken = ref<string>('')
   const tokenExpiresAt = ref<number>(0)
   const isInitialized = ref(false)
+  const isRefreshing = ref(false) // 刷新锁
   let renewalTimer: ReturnType<typeof setTimeout> | null = null
 
   // 获取后端服务地址
@@ -117,62 +118,104 @@ export function useCozeChat(sessionName: string) {
     return (config.public.chatServiceUrl as string) || 'http://localhost:8081'
   }
 
-  // 初始化会话：获取 Token
-  // 模拟：调用网站A的后端（实际上是通过我们的 Mock 接口）
-  // force 参数用于强制刷新 Token（提前续期时使用）
-  const initChatSession = async (force = false) => {
-    if (chatToken.value && !force) return // 已有 Token 且非强制刷新
+  // 获取鉴权接口地址 (产业互联网后端)
+  const getAuthUrl = (): string => {
+    return (config.public.chatAuthUrl as string) || 'http://localhost:8081/api/mock/website-a/init'
+  }
+
+  // 初始化/刷新 Token
+  // 该接口需符合《产业互联网后端接口约定文档》
+  const initChatSession = async (force = false): Promise<string> => {
+    if (chatToken.value && !force && Date.now() < tokenExpiresAt.value) {
+      return chatToken.value
+    }
+
+    if (isRefreshing.value) {
+      // 如果正在刷新，轮询等待结果
+      return new Promise((resolve, reject) => {
+        const check = setInterval(() => {
+          if (!isRefreshing.value) {
+            clearInterval(check)
+            if (chatToken.value) resolve(chatToken.value)
+            else reject(new Error('Token refresh failed'))
+          }
+        }, 100)
+      })
+    }
 
     try {
-      const backendUrl = getBackendUrl()
-      console.log('[Chat] Initializing session via:', `${backendUrl}/api/mock/website-a/init`)
-      // 模拟调用的网站A接口
-      const response = await fetch(`${backendUrl}/api/mock/website-a/init`, {
+      isRefreshing.value = true
+      const authUrl = getAuthUrl()
+      console.log('[Chat] Requesting auth token from:', authUrl)
+      
+      // 调用产业互联网后端接口
+      // 注意：此处会自动携带浏览器 Cookie
+      const response = await fetch(authUrl, {
         method: 'POST',
       })
 
       if (!response.ok) {
-        throw new Error(`Failed to init session: ${response.status}`)
+        throw new Error(`Auth failed: ${response.status}`)
       }
 
-      const data = await response.json()
-      chatToken.value = data.token
-      tokenExpiresAt.value = data.expiresAt || (Date.now() + 7200 * 1000) // 默认2小时
-      isInitialized.value = true
-      console.log('[Chat] Session initialized, token:', chatToken.value, 'expiresAt:', new Date(tokenExpiresAt.value).toLocaleTimeString())
+      const res = await response.json()
+      // 适配约定文档的响应结构: { data: { token: "...", expires_in: 7200 } }
+      // 兼容旧 Mock 结构 (Mock 直接返回平铺对象或 data)
+      const data = res.data || res 
+      
+      const newToken = data.token
+      const expiresInSeconds = data.expires_in || 7200 // 默认 2 小时
 
-      // 设置提前续期定时器
-      scheduleTokenRenewal()
+      if (!newToken) throw new Error('Invalid token response')
+
+      chatToken.value = newToken
+      // 设置本地过期时间 (留 10 秒缓冲)
+      tokenExpiresAt.value = Date.now() + (expiresInSeconds * 1000) - 10000
+      isInitialized.value = true
+      
+      console.log('[Chat] Token updated. Expires in:', expiresInSeconds, 's')
+
+      // 安排下一次静默刷新 (提前 5 分钟)
+      scheduleTokenRenewal(expiresInSeconds)
+
+      return newToken
     } catch (e) {
-      console.error('[Chat] Failed to initialize chat session:', e)
-      error.value = '鉴权失败，请刷新重试'
+      console.error('[Chat] Failed to init/refresh session:', e)
+      error.value = '连接已断开，请刷新页面重试'
+      chatToken.value = '' // 清空无效 Token
+      throw e
+    } finally {
+      isRefreshing.value = false
     }
   }
 
-  // 提前续期：在 Token 过期前 5 分钟自动刷新
-  const scheduleTokenRenewal = () => {
+  // 安排静默刷新
+  const scheduleTokenRenewal = (expiresInSeconds: number) => {
     if (renewalTimer) {
       clearTimeout(renewalTimer)
       renewalTimer = null
     }
 
-    const now = Date.now()
-    const renewAt = tokenExpiresAt.value - 5 * 60 * 1000 // 提前5分钟
-    const delay = Math.max(renewAt - now, 0)
-
-    if (delay > 0) {
-      console.log('[Chat] Token renewal scheduled in', Math.round(delay / 1000 / 60), 'minutes')
+    // 提前 5 分钟刷新
+    const refreshDelay = Math.max((expiresInSeconds - 300) * 1000, 0)
+    
+    if (refreshDelay > 0) {
+      console.log('[Chat] Next silent refresh in', Math.round(refreshDelay / 60000), 'minutes')
       renewalTimer = setTimeout(async () => {
-        console.log('[Chat] Proactive token renewal triggered')
-        await initChatSession(true) // 强制刷新
-      }, delay)
+        console.log('[Chat] Triggering silent refresh...')
+        try {
+          await initChatSession(true)
+        } catch (e) {
+          console.warn('[Chat] Silent refresh failed, will retry on next user action')
+        }
+      }, refreshDelay)
     }
   }
 
-  // 获取 Token (兼容旧代码调用，虽然现在主要通过 initChatSession)
+  // 获取 Token (带自动初始化)
   const getToken = async (): Promise<string> => {
-    if (!chatToken.value) {
-      await initChatSession()
+    if (!chatToken.value || Date.now() > tokenExpiresAt.value) {
+      return await initChatSession(true)
     }
     return chatToken.value
   }
@@ -199,6 +242,33 @@ export function useCozeChat(sessionName: string) {
     await fetchMessageHistory(convId)
   }
 
+  // 封装带 401 重试的 fetch
+  const authorizedFetch = async (url: string, options: RequestInit = {}): Promise<Response> => {
+    let token = await getToken()
+    
+    const headers = new Headers(options.headers)
+    headers.set('X-Chat-Token', token)
+    
+    let response = await fetch(url, { ...options, headers })
+
+    // 拦截 401：Token 失效
+    if (response.status === 401) {
+      console.warn('[Chat] 401 Unauthorized detected. Retrying with fresh token...')
+      try {
+        // 强制刷新 Token
+        token = await initChatSession(true)
+        // 重试请求
+        headers.set('X-Chat-Token', token)
+        response = await fetch(url, { ...options, headers })
+      } catch (e) {
+        console.error('[Chat] Re-auth failed', e)
+        throw e
+      }
+    }
+    
+    return response
+  }
+
   // 获取消息历史
   const fetchMessageHistory = async (convId?: string) => {
     const targetId = convId || conversationId.value
@@ -206,14 +276,11 @@ export function useCozeChat(sessionName: string) {
 
     try {
       isLoadingHistory.value = true
-      if (!chatToken.value) await initChatSession()
-
       const backendUrl = getBackendUrl()
-      const response = await fetch(`${backendUrl}/api/chat/messages/${targetId}`, {
-        method: 'GET',
-        headers: {
-          'X-Chat-Token': chatToken.value
-        }
+      
+      // 使用带重试的 fetch
+      const response = await authorizedFetch(`${backendUrl}/api/chat/messages/${targetId}`, {
+        method: 'GET'
       })
 
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
@@ -248,33 +315,18 @@ export function useCozeChat(sessionName: string) {
       isCreatingConversation.value = true
       error.value = null
 
-      if (!chatToken.value) await initChatSession()
-
       const backendUrl = getBackendUrl()
-      const response = await fetch(`${backendUrl}/api/chat/conversation/create`, {
+      const response = await authorizedFetch(`${backendUrl}/api/chat/conversation/create`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'X-Chat-Token': chatToken.value
+          'Content-Type': 'application/json'
         },
-        body: JSON.stringify({
-          // userUuid 已移除，后端从 Token 获取
-        })
+        body: JSON.stringify({})
       })
 
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
 
       const result = await response.json()
-      // 注意：这里的 result 结构可能根据后端返回不同，之前代码是 result.data.id
-      // 假设后端返回的是 standard response structure
-      // 如果后端直接返回 json string (CozeProxyService logic)，可能需要调整解析
-      // CozeProxyService createConversation returns raw string from Coze API
-      // Coze API returns: { code: 0, data: { id: "...", ... } }
-
-      // 注意 proxy service 里的 createConversation 返回的是 response.toString() 也就是 JSON 字符串
-      // JSON.parse(result) ? No, fetch already parses JSON if we use .json()
-
-      // Let's assume standard structure:
       if (result.code === 0 && result.data?.id) {
         messages.value = []
         conversationId.value = result.data.id
@@ -294,13 +346,11 @@ export function useCozeChat(sessionName: string) {
 
   const cancelChat = async (convId: string, chatId: string) => {
     try {
-      if (!chatToken.value) await initChatSession()
       const backendUrl = getBackendUrl()
-      await fetch(`${backendUrl}/api/chat/cancel`, {
+      await authorizedFetch(`${backendUrl}/api/chat/cancel`, {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
-          'X-Chat-Token': chatToken.value
+          'Content-Type': 'application/json'
         },
         body: JSON.stringify({
           conversationId: convId,

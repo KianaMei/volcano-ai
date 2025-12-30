@@ -1,0 +1,8 @@
+CREATE TABLE IF NOT EXISTS chat_logs (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  user_uuid VARCHAR(64) NOT NULL,
+  question TEXT NOT NULL,
+  answer LONGTEXT NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_user_created_at (user_uuid, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
