@@ -1,0 +1,41 @@
+# Dependencies
+node_modules/
+
+# Build outputs
+.output
+.nuxt
+.nitro
+.cache
+dist
+**/target/
+
+# Logs
+*.log
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# Secrets & Keys
+*.pem
+*.key
+*.p12
+*.jks
+*.keystore
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+.fleet/
+
+# Redis
+*.rdb
+
+# Misc
+$null
+nul

@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <title>项目时序图</title>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <style>
+        body {
+            font-family: 'Microsoft YaHei', 'PingFang SC', sans-serif;
+            max-width: 1200px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #fff;
+        }
+        h1 { text-align: center; color: #333; }
+        h2 { color: #555; border-bottom: 2px solid #4A90E2; padding-bottom: 10px; margin-top: 40px; }
+        .mermaid {
+            display: flex;
+            justify-content: center;
+            margin: 30px 0;
+            padding: 20px;
+            background: #f9f9f9;
+            border-radius: 8px;
+        }
+    </style>
+</head>
+<body>
+
+<h1>项目时序逻辑图</h1>
+
+<h2>1. 高层数据流向图</h2>
+<div class="mermaid">
+graph LR
+    A["用户浏览器 (Chat Widget)"] -->|内部Token| B["Java Chat Service"]
+    B -->|Coze鉴权| C["Coze API"]
+    B -->|日志上报| D["控制台 / MySQL"]
+</div>
+
+<h2>2. 初始化与鉴权流程</h2>
+<div class="mermaid">
+sequenceDiagram
+    participant U as 用户
+    participant F as 前端 ChatWidget
+    participant B as 后端 AuthController
+    participant S as 会话服务 SessionService
+
+    U->>F: 打开页面
+    F->>B: POST /api/mock/website-a/init
+    B->>S: createToken phone=13800138000
+    S-->>B: 返回 internal-token-xyz
+    B-->>F: JSON token
+    Note right of F: 前端保存 Token 用于后续请求头
+</div>
+
+<h2>3. 聊天消息流程 (流式响应)</h2>
+<div class="mermaid">
+sequenceDiagram
+    participant F as 前端组件
+    participant C as 后端Controller
+    participant P as CozeProxyService
+    participant Z as Coze API
+
+    F->>C: POST /api/chat/send X-Chat-Token
+    C->>C: 校验Token获取user_uuid
+    C->>P: sendMessage msg user_uuid
+    P->>Z: POST /v1/workflows/chat Bearer KEY
+    
+    par 流式响应
+        Z-->>P: SSE数据流 delta events
+        P-->>F: 透传SSE数据流
+    end
+    
+    Z-->>P: DONE
+    P-->>F: 关闭连接
+</div>
+
+<h2>4. 日志上报流程</h2>
+<div class="mermaid">
+sequenceDiagram
+    participant F as 前端组件
+    participant L as LogController
+
+    Note over F: 流式响应结束
+    F->>F: 提取Question和Answer
+    F->>L: POST /api/logs JSON
+    L->>L: 打印到控制台
+    L-->>F: 返回SUCCESS
+</div>
+
+<script>
+    mermaid.initialize({
+        startOnLoad: true,
+        theme: 'default',
+        securityLevel: 'loose',
+        flowchart: { useMaxWidth: true, htmlLabels: true }
+    });
+</script>
+
+</body>
+</html>
