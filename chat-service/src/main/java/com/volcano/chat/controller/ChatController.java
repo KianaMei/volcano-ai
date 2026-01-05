@@ -1,8 +1,8 @@
-package com.volcano.chat.service.controller;
+package com.volcano.chat.controller;
 
-import com.volcano.chat.service.dto.ChatRequest;
-import com.volcano.chat.service.dto.CancelChatRequest;
-import com.volcano.chat.service.proxy.CozeProxyService;
+import com.volcano.chat.dto.ChatRequest;
+import com.volcano.chat.dto.CancelChatRequest;
+import com.volcano.chat.service.CozeProxyService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.MediaType;

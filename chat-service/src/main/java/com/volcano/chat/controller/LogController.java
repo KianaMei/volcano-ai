@@ -1,6 +1,6 @@
-package com.volcano.chat.service.controller;
+package com.volcano.chat.controller;
 
-import com.volcano.chat.service.dto.LogRequest;
+import com.volcano.chat.dto.LogRequest;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.web.bind.annotation.*;
 

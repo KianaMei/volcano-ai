@@ -1,8 +1,8 @@
-package com.volcano.chat.service.proxy;
+package com.volcano.chat.service;
 
-import com.volcano.chat.service.config.CozeConfig;
-import com.volcano.chat.service.coze.CozeAccessTokenProvider;
-import com.volcano.chat.service.dto.ChatRequest;
+import com.volcano.chat.config.CozeConfig;
+import com.volcano.chat.coze.CozeAccessTokenProvider;
+import com.volcano.chat.dto.ChatRequest;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import lombok.RequiredArgsConstructor;

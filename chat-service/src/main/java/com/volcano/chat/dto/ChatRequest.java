@@ -1,4 +1,4 @@
-package com.volcano.chat.service.dto;
+package com.volcano.chat.dto;
 
 import lombok.Data;
 import java.util.Map;

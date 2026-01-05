@@ -1,4 +1,4 @@
-package com.volcano.chat.service.websocket;
+package com.volcano.chat.websocket;
 
 import com.volcano.chat.service.SessionService;
 import lombok.RequiredArgsConstructor;

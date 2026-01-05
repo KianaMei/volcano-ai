@@ -1,8 +1,8 @@
-package com.volcano.chat.service.config;
+package com.volcano.chat.config;
 
-import com.volcano.chat.service.websocket.CozeAsrWebSocketHandler;
-import com.volcano.chat.service.websocket.CozeTtsWebSocketHandler;
-import com.volcano.chat.service.websocket.WebSocketAuthInterceptor;
+import com.volcano.chat.websocket.CozeAsrWebSocketHandler;
+import com.volcano.chat.websocket.CozeTtsWebSocketHandler;
+import com.volcano.chat.websocket.WebSocketAuthInterceptor;
 import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.web.socket.config.annotation.EnableWebSocket;

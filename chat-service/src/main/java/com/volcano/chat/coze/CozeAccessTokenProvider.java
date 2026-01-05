@@ -1,8 +1,8 @@
-package com.volcano.chat.service.coze;
+package com.volcano.chat.coze;
 
 import com.coze.openapi.client.auth.OAuthToken;
 import com.coze.openapi.service.auth.JWTOAuthClient;
-import com.volcano.chat.service.config.CozeConfig;
+import com.volcano.chat.config.CozeConfig;
 import jakarta.annotation.PostConstruct;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;

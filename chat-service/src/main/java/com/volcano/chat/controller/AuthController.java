@@ -1,4 +1,4 @@
-package com.volcano.chat.service.controller;
+package com.volcano.chat.controller;
 
 import com.volcano.chat.service.SessionService;
 import org.springframework.beans.factory.annotation.Autowired;
