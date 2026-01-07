@@ -221,12 +221,17 @@ public class CozeProxyService {
                             currentEvent = line.substring(6).trim();
                         } else if (line.startsWith("data:") && !currentEvent.isEmpty()) {
                             String data = line.substring(5).trim();
+                            
+                            // 记录 SSE 事件（调试用）
+                            log.debug("SSE Event: type={}, data={}", currentEvent, 
+                                    data.length() > 200 ? data.substring(0, 200) + "..." : data);
+                            
                             // 转发事件到前端
                             emitter.send(SseEmitter.event()
                                     .name(currentEvent)
                                     .data(data));
                             
-                            // 累积 AI 回答内容（根据事件类型提取）
+                            // 累积 AI 回答内容（只提取 conversation.message.delta 中 type=answer 的内容）
                             extractAndAppendContent(currentEvent, data, aiAnswerBuilder);
                         }
                     }
@@ -585,34 +590,89 @@ public class CozeProxyService {
 
     /**
      * 从 SSE 事件数据中提取 AI 回答内容并累积
+     * 
+     * Coze Workflow API 流式响应事件类型：
+     * - conversation.chat.created: 会话创建
+     * - conversation.chat.in_progress: 处理中
+     * - conversation.message.delta: 增量消息内容（流式输出）
+     * - conversation.message.completed: 消息完成
+     * - conversation.chat.completed: 会话完成
+     * - done: 结束
+     * 
+     * 只提取 type="answer" 的消息内容，忽略 type="verbose" 的调试信息
      */
     private void extractAndAppendContent(String eventType, String data, StringBuilder builder) {
         try {
-            // 根据 Coze API 的事件类型提取内容
-            // 常见事件: message, done, error 等
-            if ("message".equals(eventType) || "Message".equals(eventType)) {
-                // 尝试从 JSON 中提取 content 字段
-                int contentStart = data.indexOf("\"content\":");
-                if (contentStart != -1) {
-                    int valueStart = data.indexOf("\"", contentStart + 10);
-                    if (valueStart != -1) {
-                        int valueEnd = findClosingQuote(data, valueStart + 1);
-                        if (valueEnd != -1) {
-                            String content = data.substring(valueStart + 1, valueEnd);
-                            // 反转义
-                            content = content.replace("\\n", "\n")
-                                           .replace("\\r", "\r")
-                                           .replace("\\t", "\t")
-                                           .replace("\\\"", "\"")
-                                           .replace("\\\\", "\\");
-                            builder.append(content);
-                        }
-                    }
-                }
+            // 只处理增量消息事件
+            if (!"conversation.message.delta".equals(eventType)) {
+                return;
+            }
+            
+            // 检查是否是 answer 类型（忽略 verbose 类型的调试信息）
+            String type = extractJsonField(data, "type");
+            if (!"answer".equals(type)) {
+                return;
+            }
+            
+            // 提取 content 字段
+            String content = extractJsonField(data, "content");
+            if (content != null && !content.isEmpty()) {
+                builder.append(content);
+                log.debug("Extracted answer content: {}", content);
             }
         } catch (Exception e) {
             log.debug("Failed to extract content from SSE data: {}", e.getMessage());
         }
+    }
+
+    /**
+     * 从 JSON 字符串中提取指定字段的值
+     */
+    private String extractJsonField(String json, String fieldName) {
+        String searchKey = "\"" + fieldName + "\":";
+        int fieldStart = json.indexOf(searchKey);
+        if (fieldStart == -1) {
+            return null;
+        }
+        
+        int valueStart = fieldStart + searchKey.length();
+        // 跳过空格
+        while (valueStart < json.length() && json.charAt(valueStart) == ' ') {
+            valueStart++;
+        }
+        
+        if (valueStart >= json.length()) {
+            return null;
+        }
+        
+        char firstChar = json.charAt(valueStart);
+        if (firstChar == '"') {
+            // 字符串值
+            int valueEnd = findClosingQuote(json, valueStart + 1);
+            if (valueEnd != -1) {
+                String value = json.substring(valueStart + 1, valueEnd);
+                // 反转义
+                return value.replace("\\n", "\n")
+                           .replace("\\r", "\r")
+                           .replace("\\t", "\t")
+                           .replace("\\\"", "\"")
+                           .replace("\\\\", "\\");
+            }
+        } else if (firstChar == '{' || firstChar == '[') {
+            // 对象或数组，暂不处理
+            return null;
+        } else {
+            // 数字、布尔等
+            int valueEnd = valueStart;
+            while (valueEnd < json.length() && 
+                   json.charAt(valueEnd) != ',' && 
+                   json.charAt(valueEnd) != '}' &&
+                   json.charAt(valueEnd) != ']') {
+                valueEnd++;
+            }
+            return json.substring(valueStart, valueEnd).trim();
+        }
+        return null;
     }
 
     /**

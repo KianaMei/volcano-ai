@@ -3,6 +3,7 @@ package com.volcano.chat.util;
 import io.jsonwebtoken.Claims;
 import io.jsonwebtoken.ExpiredJwtException;
 import io.jsonwebtoken.Jwts;
+import io.jsonwebtoken.SignatureAlgorithm;
 import io.jsonwebtoken.security.Keys;
 import lombok.extern.slf4j.Slf4j;
 
@@ -35,10 +36,10 @@ public class JwtUtil {
         Date expireTime = new Date(now.getTime() + EXPIRE_TIME_MS);
 
         return Jwts.builder()
-                .subject(subject)
-                .issuedAt(now)
-                .expiration(expireTime)
-                .signWith(SECRET_KEY)
+                .setSubject(subject)
+                .setIssuedAt(now)
+                .setExpiration(expireTime)
+                .signWith(SECRET_KEY, SignatureAlgorithm.HS256)
                 .compact();
     }
 
@@ -54,11 +55,11 @@ public class JwtUtil {
         }
 
         try {
-            Claims claims = Jwts.parser()
-                    .verifyWith(SECRET_KEY)
+            Claims claims = Jwts.parserBuilder()
+                    .setSigningKey(SECRET_KEY)
                     .build()
-                    .parseSignedClaims(token)
-                    .getPayload();
+                    .parseClaimsJws(token)
+                    .getBody();
 
             return JwtValidationResult.valid(claims.getSubject(), claims.getIssuedAt(), claims.getExpiration());
         } catch (ExpiredJwtException e) {

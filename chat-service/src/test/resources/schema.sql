@@ -1,7 +1,8 @@
+-- PostgreSQL schema for chat_logs table
 CREATE TABLE IF NOT EXISTS chat_logs (
-    record_id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    record_id BIGSERIAL PRIMARY KEY,
     session_id VARCHAR(255),
-    user_id BIGINT NOT NULL,
+    user_id VARCHAR(64) NOT NULL,
     user_question TEXT,
     ai_answer TEXT,
     request_time TIMESTAMP NOT NULL,
