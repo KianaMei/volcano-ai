@@ -1,8 +1,8 @@
 package com.volcano.chat.service;
 
 import com.volcano.chat.config.CozeConfig;
-import com.volcano.chat.coze.CozeAccessTokenProvider;
 import com.volcano.chat.dto.ChatRequest;
+import com.volcano.chat.entity.ChatLog;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
 import lombok.RequiredArgsConstructor;
@@ -18,6 +18,7 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDateTime;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
@@ -40,7 +41,7 @@ import java.util.concurrent.atomic.AtomicReference;
 public class CozeProxyService {
 
     private final CozeConfig cozeConfig;
-    private final CozeAccessTokenProvider tokenProvider;
+    private final ChatLogService chatLogService;
     private ExecutorService executor;
 
     @Value("${chat.sse.max-concurrent:300}")
@@ -90,8 +91,16 @@ public class CozeProxyService {
     /**
      * 代理发送消息请求到 Coze API
      * 使用 SSE 流式返回响应（流式）
+     * 
+     * 按照时序图实现两步写入：
+     * 1. 发起请求前先插入问题记录 (Insert Q)
+     * 2. 流结束后更新答案 (Update A)
+     * 
+     * @param request 聊天请求
+     * @param userPhone 用户标识（手机号）
+     * @param cozeToken 已缓存的 Coze OAuth Token
      */
-    public SseEmitter sendMessage(ChatRequest request, String userUuid) {
+    public SseEmitter sendMessage(ChatRequest request, String userPhone, String cozeToken) {
         SseEmitter emitter = new SseEmitter(emitterTimeoutMs <= 0 ? 0L : emitterTimeoutMs);
 
         if (sseLimiter == null || !sseLimiter.tryAcquire()) {
@@ -137,7 +146,16 @@ public class CozeProxyService {
         try {
             executor.execute(() -> {
                 HttpURLConnection connection = null;
+                LocalDateTime requestTime = LocalDateTime.now();
+                StringBuilder aiAnswerBuilder = new StringBuilder();
+                String userQuestion = request.getMessage();
+                String sessionId = request.getConversationId();
+                Long chatLogId = null;
+                
                 try {
+                // ========== 步骤8: 先插入问题记录到数据库 (Insert Q) ==========
+                chatLogId = insertQuestionLog(userPhone, sessionId, userQuestion, requestTime);
+                
                 // 构建请求体
                 Map<String, Object> body = new HashMap<>();
                 body.put("workflow_id", cozeConfig.getWorkflowId());
@@ -146,13 +164,13 @@ public class CozeProxyService {
                 // 用户消息
                 Map<String, Object> message = new HashMap<>();
                 message.put("role", "user");
-                message.put("content", request.getMessage());
+                message.put("content", userQuestion);
                 message.put("content_type", "text");
                 body.put("additional_messages", new Object[] { message });
 
                 // 参数（包含 user_uuid - 这个不会暴露给前端）
                 Map<String, Object> params = new HashMap<>();
-                params.put("user_uuid", userUuid);
+                params.put("user_uuid", userPhone);
                 if (request.getParams() != null) {
                     params.putAll(request.getParams());
                 }
@@ -166,23 +184,14 @@ public class CozeProxyService {
                 String jsonBody = toJson(body);
                 log.debug("Coze request body: {}", jsonBody);
 
-                // 发送请求到 Coze API
+                // ========== 步骤9: 发送请求到 Coze API ==========
                 URL url = new URL(cozeConfig.getApiBaseUrl() + "/v1/workflows/chat");
                 connection = (HttpURLConnection) url.openConnection();
                 connectionRef.set(connection);
                 applyTimeouts(connection);
                 connection.setRequestMethod("POST");
                 connection.setRequestProperty("Content-Type", "application/json");
-                // 使用 userUuid（手机号）获取 token，实现会话隔离
-                CozeAccessTokenProvider.TokenResponse tokenResp = tokenProvider.getAccessToken(userUuid);
-                if (tokenResp.isNeedsPatConfirmation()) {
-                    // 需要确认使用 PAT
-                    emitter.send(SseEmitter.event().name("error")
-                            .data("{\"msg\":\"" + tokenResp.getMessage() + "\",\"needs_pat_confirmation\":true}"));
-                    emitter.complete();
-                    return;
-                }
-                connection.setRequestProperty("Authorization", "Bearer " + tokenResp.getAccessToken());
+                connection.setRequestProperty("Authorization", "Bearer " + cozeToken);
                 connection.setRequestProperty("Accept", "text/event-stream");
                 connection.setDoOutput(true);
                 connection.setDoInput(true);
@@ -201,7 +210,7 @@ public class CozeProxyService {
                     return;
                 }
 
-                // 读取 SSE 响应并转发
+                // ========== 步骤10-11: 读取 SSE 响应并转发 ==========
                 try (BufferedReader reader = new BufferedReader(
                         new InputStreamReader(connection.getInputStream(), StandardCharsets.UTF_8))) {
                     String line;
@@ -216,16 +225,22 @@ public class CozeProxyService {
                             emitter.send(SseEmitter.event()
                                     .name(currentEvent)
                                     .data(data));
+                            
+                            // 累积 AI 回答内容（根据事件类型提取）
+                            extractAndAppendContent(currentEvent, data, aiAnswerBuilder);
                         }
                     }
                 }
+
+                // ========== 步骤13: 流结束后更新答案 (Update A) ==========
+                updateAnswerLog(chatLogId, aiAnswerBuilder.toString(), LocalDateTime.now());
 
                 emitter.complete();
 
             } catch (java.net.SocketTimeoutException e) {
                 if (!stopRequested.get()) {
                     log.warn("Coze SSE read timeout ({}ms) for user {}...",
-                            cozeReadTimeoutMs, userUuid.substring(0, Math.min(4, userUuid.length())));
+                            cozeReadTimeoutMs, userPhone.substring(0, Math.min(4, userPhone.length())));
                     safeSendError(emitter, 504, "上游流式响应超时（60秒无数据），请重试");
                     emitter.complete();
                 }
@@ -253,9 +268,6 @@ public class CozeProxyService {
         return emitter;
     }
 
-    /**
-     * 代理 TTS 请求到 Coze API
-     */
     private void applyTimeouts(HttpURLConnection connection) {
         if (cozeConnectTimeoutMs > 0) {
             connection.setConnectTimeout(cozeConnectTimeoutMs);
@@ -275,7 +287,10 @@ public class CozeProxyService {
         }
     }
 
-    public byte[] textToSpeech(String text, String userUuid) throws IOException {
+    /**
+     * 代理 TTS 请求到 Coze API
+     */
+    public byte[] textToSpeech(String text, String cozeToken) throws IOException {
         Map<String, Object> body = new HashMap<>();
         body.put("input", text);
         body.put("voice_id", cozeConfig.getVoiceId());
@@ -283,18 +298,12 @@ public class CozeProxyService {
 
         String jsonBody = toJson(body);
 
-        // 获取 token（带会话隔离）
-        CozeAccessTokenProvider.TokenResponse tokenResp = tokenProvider.getAccessToken(userUuid);
-        if (tokenResp.isNeedsPatConfirmation()) {
-            throw new IOException("PAT confirmation required: " + tokenResp.getMessage());
-        }
-
         URL url = new URL(cozeConfig.getApiBaseUrl() + "/v1/audio/speech");
         HttpURLConnection connection = (HttpURLConnection) url.openConnection();
         applyTimeouts(connection);
         connection.setRequestMethod("POST");
         connection.setRequestProperty("Content-Type", "application/json");
-        connection.setRequestProperty("Authorization", "Bearer " + tokenResp.getAccessToken());
+        connection.setRequestProperty("Authorization", "Bearer " + cozeToken);
         connection.setDoOutput(true);
 
         try (OutputStream os = connection.getOutputStream()) {
@@ -329,24 +338,17 @@ public class CozeProxyService {
 
     /**
      * 代理 ASR 请求到 Coze API
-     * (Multipart/form-data 手动构建)
      */
-    public String speechToText(org.springframework.web.multipart.MultipartFile file, String userUuid) throws IOException {
+    public String speechToText(org.springframework.web.multipart.MultipartFile file, String cozeToken) throws IOException {
         String boundary = "---boundary" + System.currentTimeMillis();
         String LINE_FEED = "\r\n";
-
-        // 获取 token（带会话隔离）
-        CozeAccessTokenProvider.TokenResponse tokenResp = tokenProvider.getAccessToken(userUuid);
-        if (tokenResp.isNeedsPatConfirmation()) {
-            throw new IOException("PAT confirmation required: " + tokenResp.getMessage());
-        }
 
         URL url = new URL(cozeConfig.getApiBaseUrl() + "/v1/audio/transcriptions");
         HttpURLConnection connection = (HttpURLConnection) url.openConnection();
         applyTimeouts(connection);
         connection.setRequestMethod("POST");
         connection.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
-        connection.setRequestProperty("Authorization", "Bearer " + tokenResp.getAccessToken());
+        connection.setRequestProperty("Authorization", "Bearer " + cozeToken);
         connection.setDoOutput(true);
 
         try (OutputStream outputStream = connection.getOutputStream();
@@ -407,24 +409,18 @@ public class CozeProxyService {
     /**
      * 创建新会话
      */
-    public String createConversation(String userUuid) throws IOException {
+    public String createConversation(String cozeToken) throws IOException {
         Map<String, Object> body = new HashMap<>();
         body.put("bot_id", cozeConfig.getBotId());
 
         String jsonBody = toJson(body);
-
-        // 获取 token（带会话隔离）
-        CozeAccessTokenProvider.TokenResponse tokenResp = tokenProvider.getAccessToken(userUuid);
-        if (tokenResp.isNeedsPatConfirmation()) {
-            throw new IOException("PAT confirmation required: " + tokenResp.getMessage());
-        }
 
         URL url = new URL(cozeConfig.getApiBaseUrl() + "/v1/conversation/create");
         HttpURLConnection connection = (HttpURLConnection) url.openConnection();
         applyTimeouts(connection);
         connection.setRequestMethod("POST");
         connection.setRequestProperty("Content-Type", "application/json");
-        connection.setRequestProperty("Authorization", "Bearer " + tokenResp.getAccessToken());
+        connection.setRequestProperty("Authorization", "Bearer " + cozeToken);
         connection.setDoOutput(true);
 
         try (OutputStream os = connection.getOutputStream()) {
@@ -452,18 +448,12 @@ public class CozeProxyService {
     /**
      * 获取消息历史
      */
-    public String getMessageHistory(String conversationId, String userUuid) throws IOException {
+    public String getMessageHistory(String conversationId, String cozeToken) throws IOException {
         Map<String, Object> body = new HashMap<>();
         body.put("order", "asc");
         body.put("limit", 50);
 
         String jsonBody = toJson(body);
-
-        // 获取 token（带会话隔离）
-        CozeAccessTokenProvider.TokenResponse tokenResp = tokenProvider.getAccessToken(userUuid);
-        if (tokenResp.isNeedsPatConfirmation()) {
-            throw new IOException("PAT confirmation required: " + tokenResp.getMessage());
-        }
 
         URL url = new URL(
                 cozeConfig.getApiBaseUrl() + "/v1/conversation/message/list?conversation_id=" + conversationId);
@@ -471,7 +461,7 @@ public class CozeProxyService {
         applyTimeouts(connection);
         connection.setRequestMethod("POST");
         connection.setRequestProperty("Content-Type", "application/json");
-        connection.setRequestProperty("Authorization", "Bearer " + tokenResp.getAccessToken());
+        connection.setRequestProperty("Authorization", "Bearer " + cozeToken);
         connection.setDoOutput(true);
 
         try (OutputStream os = connection.getOutputStream()) {
@@ -497,9 +487,9 @@ public class CozeProxyService {
     }
 
     /**
-     * 取消进行中的对话（Chat Cancel API）
+     * 取消进行中的对话
      */
-    public String cancelChat(String conversationId, String chatId, String userUuid) throws IOException {
+    public String cancelChat(String conversationId, String chatId, String cozeToken) throws IOException {
         if (conversationId == null || conversationId.isBlank()) {
             throw new IllegalArgumentException("conversationId is required");
         }
@@ -512,17 +502,12 @@ public class CozeProxyService {
         body.put("chat_id", chatId);
         String jsonBody = toJson(body);
 
-        CozeAccessTokenProvider.TokenResponse tokenResp = tokenProvider.getAccessToken(userUuid);
-        if (tokenResp.isNeedsPatConfirmation()) {
-            throw new IOException("PAT confirmation required: " + tokenResp.getMessage());
-        }
-
         URL url = new URL(cozeConfig.getApiBaseUrl() + "/v3/chat/cancel");
         HttpURLConnection connection = (HttpURLConnection) url.openConnection();
         applyTimeouts(connection);
         connection.setRequestMethod("POST");
         connection.setRequestProperty("Content-Type", "application/json");
-        connection.setRequestProperty("Authorization", "Bearer " + tokenResp.getAccessToken());
+        connection.setRequestProperty("Authorization", "Bearer " + cozeToken);
         connection.setDoOutput(true);
 
         try (OutputStream os = connection.getOutputStream()) {
@@ -549,8 +534,7 @@ public class CozeProxyService {
     }
 
     /**
-     * 简单的 JSON 序列化（避免引入额外依赖）
-     * 生产环境建议使用 Jackson
+     * 简单的 JSON 序列化
      */
     private String toJson(Map<String, Object> map) {
         StringBuilder sb = new StringBuilder("{");
@@ -597,5 +581,130 @@ public class CozeProxyService {
                 .replace("\n", "\\n")
                 .replace("\r", "\\r")
                 .replace("\t", "\\t");
+    }
+
+    /**
+     * 从 SSE 事件数据中提取 AI 回答内容并累积
+     */
+    private void extractAndAppendContent(String eventType, String data, StringBuilder builder) {
+        try {
+            // 根据 Coze API 的事件类型提取内容
+            // 常见事件: message, done, error 等
+            if ("message".equals(eventType) || "Message".equals(eventType)) {
+                // 尝试从 JSON 中提取 content 字段
+                int contentStart = data.indexOf("\"content\":");
+                if (contentStart != -1) {
+                    int valueStart = data.indexOf("\"", contentStart + 10);
+                    if (valueStart != -1) {
+                        int valueEnd = findClosingQuote(data, valueStart + 1);
+                        if (valueEnd != -1) {
+                            String content = data.substring(valueStart + 1, valueEnd);
+                            // 反转义
+                            content = content.replace("\\n", "\n")
+                                           .replace("\\r", "\r")
+                                           .replace("\\t", "\t")
+                                           .replace("\\\"", "\"")
+                                           .replace("\\\\", "\\");
+                            builder.append(content);
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            log.debug("Failed to extract content from SSE data: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * 查找 JSON 字符串中的闭合引号位置（处理转义）
+     */
+    private int findClosingQuote(String s, int start) {
+        for (int i = start; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '\\' && i + 1 < s.length()) {
+                i++; // 跳过转义字符
+            } else if (c == '"') {
+                return i;
+            }
+        }
+        return -1;
+    }
+
+    /**
+     * 步骤8: 插入问题记录到数据库 (Insert Q)
+     * 在发起 Coze 请求前先记录用户提问
+     * 
+     * @return 记录ID，用于后续更新答案
+     */
+    private Long insertQuestionLog(String userPhone, String sessionId, String userQuestion, 
+                                   LocalDateTime requestTime) {
+        try {
+            ChatLog chatLog = new ChatLog();
+            chatLog.setUserId(userPhone);
+            chatLog.setSessionId(sessionId);
+            chatLog.setUserQuestion(userQuestion);
+            chatLog.setAiAnswer(null); // 答案稍后更新
+            chatLog.setRequestTime(requestTime);
+            chatLog.setResponseTime(null); // 响应时间稍后更新
+            chatLog.setDeleted(0);
+            
+            Long recordId = chatLogService.insert(chatLog);
+            log.debug("Inserted question log (recordId: {}) for user: {}...", 
+                     recordId, userPhone.substring(0, Math.min(4, userPhone.length())));
+            return recordId;
+        } catch (Exception e) {
+            log.error("Failed to insert question log for user: {}", userPhone, e);
+            return null;
+        }
+    }
+
+    /**
+     * 步骤13: 更新答案到数据库 (Update A)
+     * 在 SSE 流结束后更新 AI 回答内容
+     */
+    private void updateAnswerLog(Long recordId, String aiAnswer, LocalDateTime responseTime) {
+        if (recordId == null) {
+            log.warn("Cannot update answer log: recordId is null");
+            return;
+        }
+        try {
+            ChatLog chatLog = new ChatLog();
+            chatLog.setRecordId(recordId);
+            chatLog.setAiAnswer(aiAnswer);
+            chatLog.setResponseTime(responseTime);
+            
+            boolean success = chatLogService.updateById(chatLog);
+            if (success) {
+                log.debug("Updated answer log (recordId: {})", recordId);
+            } else {
+                log.warn("Failed to update answer log (recordId: {}): record not found or not modified", recordId);
+            }
+        } catch (Exception e) {
+            log.error("Failed to update answer log (recordId: {})", recordId, e);
+        }
+    }
+
+    /**
+     * 保存聊天日志到数据库
+     * @deprecated 使用 insertQuestionLog + updateAnswerLog 两步写入替代
+     */
+    @Deprecated
+    private void saveChatLog(String userPhone, String sessionId, String userQuestion,
+                            String aiAnswer, LocalDateTime requestTime, LocalDateTime responseTime) {
+        try {
+            ChatLog chatLog = new ChatLog();
+            chatLog.setUserId(userPhone);
+            chatLog.setSessionId(sessionId);
+            chatLog.setUserQuestion(userQuestion);
+            chatLog.setAiAnswer(aiAnswer);
+            chatLog.setRequestTime(requestTime);
+            chatLog.setResponseTime(responseTime);
+            chatLog.setDeleted(0);
+            
+            chatLogService.insert(chatLog);
+            log.debug("Chat log saved for user: {}...", userPhone.substring(0, Math.min(4, userPhone.length())));
+        } catch (Exception e) {
+            log.error("Failed to save chat log for user: {}", userPhone, e);
+        }
     }
 }

@@ -17,7 +17,7 @@ public interface ChatLogMapper extends BaseMapper<ChatLog> {
     ChatLog selectByRecordId(@Param("recordId") Long recordId);
 
     @Select("SELECT * FROM chat_logs WHERE user_id = #{userId} AND deleted = 0")
-    List<ChatLog> selectByUserId(@Param("userId") Long userId);
+    List<ChatLog> selectByUserId(@Param("userId") String userId);
 
     @Select("SELECT * FROM chat_logs WHERE request_time >= #{startTime} AND request_time <= #{endTime} AND deleted = 0")
     List<ChatLog> selectByRequestTimeRange(@Param("startTime") LocalDateTime startTime, @Param("endTime") LocalDateTime endTime);

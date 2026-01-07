@@ -24,7 +24,7 @@ public interface ChatLogService {
      * @param userId 用户ID
      * @return 聊天记录列表
      */
-    List<ChatLog> selectByUserId(Long userId);
+    List<ChatLog> selectByUserId(String userId);
 
     /**
      * 根据时间范围查询聊天记录

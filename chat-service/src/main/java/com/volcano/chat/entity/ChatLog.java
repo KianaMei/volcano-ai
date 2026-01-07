@@ -20,7 +20,7 @@ public class ChatLog {
     private String sessionId;
 
     @TableField("user_id")
-    private Long userId;
+    private String userId;
 
     @TableField("user_question")
     private String userQuestion;

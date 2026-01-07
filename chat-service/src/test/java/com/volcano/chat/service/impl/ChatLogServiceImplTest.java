@@ -31,7 +31,7 @@ class ChatLogServiceImplTest {
     private static ChatLogMapper chatLogMapper;
 
     private static Long testRecordId;
-    private static final Long TEST_USER_ID = 99999L;
+    private static final String TEST_USER_ID = "99999";
 
     @BeforeAll
     static void setUp() throws IOException {
@@ -150,5 +150,79 @@ class ChatLogServiceImplTest {
         boolean result = chatLogService.deleteById(testRecordId);
 
         assertTrue(result);
+    }
+
+    // ==================== 模拟时序图分步插入测试 ====================
+
+    private static Long twoStepRecordId;
+
+    @Test
+    @Order(7)
+    @DisplayName("时序图步骤8: 先插入问题记录 (Insert Q)")
+    void insertQuestionOnly() {
+        // 模拟时序图步骤8：在发起 Coze 请求前先插入问题记录
+        ChatLog chatLog = new ChatLog();
+        chatLog.setSessionId("two-step-session-001");
+        chatLog.setUserId("13800138000");
+        chatLog.setUserQuestion("这是一个测试问题，模拟用户提问");
+        chatLog.setAiAnswer(null);  // 答案稀后更新
+        chatLog.setRequestTime(LocalDateTime.now());
+        chatLog.setResponseTime(null);  // 响应时间稍后更新
+
+        twoStepRecordId = chatLogService.insert(chatLog);
+
+        assertNotNull(twoStepRecordId, "插入问题记录应返回有效的 recordId");
+        
+        // 验证记录已插入，但答案为空
+        ChatLog inserted = chatLogService.selectById(twoStepRecordId);
+        assertNotNull(inserted);
+        assertEquals("这是一个测试问题，模拟用户提问", inserted.getUserQuestion());
+        assertNull(inserted.getAiAnswer(), "此时 AI 答案应为 null");
+        assertNull(inserted.getResponseTime(), "此时响应时间应为 null");
+        
+        System.out.println("✅ 步骤8完成: 问题记录已插入, recordId=" + twoStepRecordId);
+    }
+
+    @Test
+    @Order(8)
+    @DisplayName("时序图步骤13: 更新答案 (Update A)")
+    void updateAnswerAfterStream() {
+        twoStepRecordId = twoStepRecordId != null ? twoStepRecordId : 2L; // 确保有一个ID可用
+        assertNotNull(twoStepRecordId, "需要先执行 insertQuestionOnly 测试");
+        
+        // 模拟时序图步骤13：SSE 流结束后更新答案
+        ChatLog updateLog = new ChatLog();
+        updateLog.setRecordId(twoStepRecordId);
+        updateLog.setAiAnswer("这是 AI 的回答内容，模拟 Coze API 返回的流式响应累积结果");
+        updateLog.setResponseTime(LocalDateTime.now());
+
+        boolean updated = chatLogService.updateById(updateLog);
+
+        assertTrue(updated, "更新答案应成功");
+        
+        // 验证记录已更新
+        ChatLog result = chatLogService.selectById(twoStepRecordId);
+        assertNotNull(result);
+        assertEquals("这是一个测试问题，模拟用户提问", result.getUserQuestion());
+        assertNotNull(result.getAiAnswer(), "AI 答案应已更新");
+        assertEquals("这是 AI 的回答内容，模拟 Coze API 返回的流式响应累积结果", result.getAiAnswer());
+        assertNotNull(result.getResponseTime(), "响应时间应已更新");
+        
+        System.out.println("✅ 步骤13完成: 答案已更新");
+        System.out.println("   - 问题: " + result.getUserQuestion());
+        System.out.println("   - 答案: " + result.getAiAnswer());
+        System.out.println("   - 请求时间: " + result.getRequestTime());
+        System.out.println("   - 响应时间: " + result.getResponseTime());
+    }
+
+    @Test
+    @Order(9)
+    @DisplayName("清理: 删除分步测试记录")
+    void cleanupTwoStepRecord() {
+        if (twoStepRecordId != null) {
+            boolean deleted = chatLogService.deleteById(twoStepRecordId);
+            assertTrue(deleted, "清理分步测试记录应成功");
+            System.out.println("✅ 清理完成: 已删除测试记录 recordId=" + twoStepRecordId);
+        }
     }
 }

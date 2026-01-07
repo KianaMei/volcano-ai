@@ -31,7 +31,7 @@ public class ChatLogServiceImpl implements ChatLogService {
     }
 
     @Override
-    public List<ChatLog> selectByUserId(Long userId) {
+    public List<ChatLog> selectByUserId(String userId) {
         return chatLogMapper.selectByUserId(userId);
     }
 

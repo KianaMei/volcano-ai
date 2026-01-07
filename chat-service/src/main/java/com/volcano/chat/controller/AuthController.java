@@ -1,57 +1,78 @@
 package com.volcano.chat.controller;
 
-import com.volcano.chat.service.SessionService;
-import org.springframework.beans.factory.annotation.Autowired;
+import com.volcano.chat.service.UserTokenService;
+import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.HashMap;
 import java.util.Map;
 
+/**
+ * 认证控制器
+ * 
+ * 时序图阶段一：身份交换 (S2S)
+ * 1. 业务方后端调用 /internal/session/create
+ * 2. 生成 JWT Token（记录生成时间和过期时间）
+ * 3. 使用手机号申请 Coze Token
+ * 4. 将手机号和 Coze Token 存入 Redis
+ * 5. 返回 JWT Token 作为凭证
+ */
 @RestController
 @RequestMapping("/api")
 @CrossOrigin(origins = "*")
+@RequiredArgsConstructor
 public class AuthController {
 
-    @Autowired
-    private SessionService sessionService;
+    private final UserTokenService userTokenService;
 
-    // 内部 S2S 接口：供网站A后端调用
-    // 真实场景下应添加 IP 白名单或各服务间鉴权
+    // Token 有效期：30分钟
+    private static final long TOKEN_EXPIRE_MS = 1800 * 1000L;
+
+    /**
+     * 内部 S2S 接口：供业务方后端调用
+     * 
+     * 流程：
+     * 1. 生成 JWT Token（包含生成时间和过期时间）
+     * 2. 使用 phone 申请 Coze Token
+     * 3. 将 {phone, cozeToken} 存入 Redis，Key 为 JWT Token
+     * 4. 返回 JWT Token
+     * 
+     * 真实场景下应添加 IP 白名单或服务间鉴权
+     */
     @PostMapping("/internal/session/create")
-    public Map<String, String> createSession(@RequestBody Map<String, String> request) {
+    public Map<String, Object> createSession(@RequestBody Map<String, String> request) {
         String phone = request.get("phone");
         if (phone == null || phone.isEmpty()) {
             throw new IllegalArgumentException("Phone is required");
         }
 
-        String token = sessionService.createToken(phone);
+        // 生成 JWT Token，同时获取 Coze Token 并存入 Redis
+        String jwtToken = userTokenService.createUserToken(phone);
 
-        Map<String, String> response = new HashMap<>();
-        response.put("token", token);
+        Map<String, Object> response = new HashMap<>();
+        response.put("token", jwtToken);
+        response.put("expiresAt", System.currentTimeMillis() + TOKEN_EXPIRE_MS);
         return response;
     }
 
-    // ==========================================
-    // Mock 接口：模拟 网站A 的后端
-    // 前端直接调这个接口，假装自己通过了 Cookie 验证
-    // ==========================================
+    /**
+     * Mock 接口：模拟业务方后端
+     * 前端直接调这个接口，假装自己通过了 Cookie 验证
+     */
     @PostMapping("/mock/website-a/init")
     public Map<String, Object> mockWebsiteAInit() {
-        // 模拟网站A后端逻辑：
+        // 模拟业务方后端逻辑：
         // 1. 验证 Cookie... (省略)
         // 2. 获取到当前登录用户是 "13800138000"
         String currentUserPhone = "13800138000";
 
-        // 3. 调用 S2S 接口生成 Token
-        // (这里直接调用 Service 模拟远程调用)
-        String token = sessionService.createToken(currentUserPhone);
-
-        // Token 有效期（毫秒）
-        long tokenExpireMs = 7200 * 1000L;
+        // 3. 调用 UserTokenService 生成 JWT Token
+        //    内部会：生成JWT → 获取CozeToken → 存入Redis
+        String jwtToken = userTokenService.createUserToken(currentUserPhone);
 
         Map<String, Object> response = new HashMap<>();
-        response.put("token", token);
-        response.put("expiresAt", System.currentTimeMillis() + tokenExpireMs);
+        response.put("token", jwtToken);
+        response.put("expiresAt", System.currentTimeMillis() + TOKEN_EXPIRE_MS);
         return response;
     }
 }

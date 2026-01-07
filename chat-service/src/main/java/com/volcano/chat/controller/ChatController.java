@@ -2,7 +2,10 @@ package com.volcano.chat.controller;
 
 import com.volcano.chat.dto.ChatRequest;
 import com.volcano.chat.dto.CancelChatRequest;
+import com.volcano.chat.dto.UserTokenInfo;
 import com.volcano.chat.service.CozeProxyService;
+import com.volcano.chat.service.UserTokenService;
+import com.volcano.chat.util.JwtUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.MediaType;
@@ -16,8 +19,6 @@ import java.io.IOException;
  * 聊天控制器
  * 代理前端请求到 Coze API，隐藏敏感信息（user_uuid、token 等）
  */
-import com.volcano.chat.service.SessionService;
-
 @Slf4j
 @RestController
 @RequestMapping("/api/chat")
@@ -26,20 +27,32 @@ import com.volcano.chat.service.SessionService;
 public class ChatController {
 
     private final CozeProxyService cozeProxyService;
-    private final SessionService sessionService;
+    private final UserTokenService userTokenService;
 
     /**
-     * Helper method to validate token
+     * 验证 JWT Token 并获取用户信息
      */
-    private String validateToken(String token) {
+    private UserTokenInfo validateToken(String token) {
         if (token == null || token.isEmpty()) {
             throw new IllegalArgumentException("Missing X-Chat-Token header");
         }
-        String userUuid = sessionService.getUserUuid(token);
-        if (userUuid == null) {
+        
+        // 验证 JWT 签名和过期时间
+        JwtUtil.JwtValidationResult jwtResult = JwtUtil.validateToken(token);
+        if (!jwtResult.valid()) {
+            throw new IllegalArgumentException(jwtResult.errorMessage());
+        }
+        
+        // 从 Redis 获取用户信息
+        UserTokenInfo tokenInfo = userTokenService.getUserTokenInfo(token);
+        if (tokenInfo == null) {
             throw new IllegalArgumentException("Invalid or expired token");
         }
-        return userUuid;
+        if (tokenInfo.cozeToken() == null || tokenInfo.cozeToken().isEmpty()) {
+            throw new IllegalArgumentException("Coze token not available");
+        }
+        
+        return tokenInfo;
     }
 
     /**
@@ -49,18 +62,17 @@ public class ChatController {
     public SseEmitter sendMessage(
             @RequestBody ChatRequest request,
             @RequestHeader("X-Chat-Token") String token) {
-        // 1. 验证 Token 并获取手机号
-        String userUuid;
+        UserTokenInfo tokenInfo;
         try {
-            userUuid = validateToken(token);
+            tokenInfo = validateToken(token);
         } catch (IllegalArgumentException e) {
             return sendErrorEmitter(e.getMessage());
         }
 
-        log.info("Received chat request for user: {}...", userUuid.substring(0, Math.min(8, userUuid.length())));
+        log.info("Received chat request for user: {}...", 
+                tokenInfo.phone().substring(0, Math.min(4, tokenInfo.phone().length())));
 
-        // 2. 调用代理服务 (传入安全的 userUuid)
-        return cozeProxyService.sendMessage(request, userUuid);
+        return cozeProxyService.sendMessage(request, tokenInfo.phone(), tokenInfo.cozeToken());
     }
 
     /**
@@ -71,8 +83,11 @@ public class ChatController {
             @RequestBody CancelChatRequest request,
             @RequestHeader("X-Chat-Token") String token) {
         try {
-            String userUuid = validateToken(token);
-            String result = cozeProxyService.cancelChat(request.getConversationId(), request.getChatId(), userUuid);
+            UserTokenInfo tokenInfo = validateToken(token);
+            String result = cozeProxyService.cancelChat(
+                    request.getConversationId(), 
+                    request.getChatId(), 
+                    tokenInfo.cozeToken());
             return ResponseEntity.ok(result);
         } catch (IllegalArgumentException e) {
             return ResponseEntity.status(401).body("{\"error\":\"" + e.getMessage() + "\"}");
@@ -90,8 +105,8 @@ public class ChatController {
             @RequestBody ChatRequest request,
             @RequestHeader("X-Chat-Token") String token) {
         try {
-            String userUuid = validateToken(token);
-            String result = cozeProxyService.createConversation(userUuid);
+            UserTokenInfo tokenInfo = validateToken(token);
+            String result = cozeProxyService.createConversation(tokenInfo.cozeToken());
             return ResponseEntity.ok(result);
         } catch (IllegalArgumentException e) {
             return ResponseEntity.status(401).body("{\"error\":\"" + e.getMessage() + "\"}");
@@ -101,10 +116,6 @@ public class ChatController {
         }
     }
 
-    // ... (getMessageHistory also needs update similarly, relying on userUuid
-    // implicitly or just token validation if no userUuid needed for history
-    // retrieval logic in Coze, but best to validate)
-
     /**
      * 获取消息历史
      */
@@ -113,10 +124,8 @@ public class ChatController {
             @PathVariable String conversationId,
             @RequestHeader("X-Chat-Token") String token) {
         try {
-            // 验证 Token 并获取 userUuid
-            String userUuid = validateToken(token);
-
-            String result = cozeProxyService.getMessageHistory(conversationId, userUuid);
+            UserTokenInfo tokenInfo = validateToken(token);
+            String result = cozeProxyService.getMessageHistory(conversationId, tokenInfo.cozeToken());
             return ResponseEntity.ok(result);
         } catch (IllegalArgumentException e) {
             return ResponseEntity.status(401).body("{\"error\":\"" + e.getMessage() + "\"}");
@@ -134,13 +143,13 @@ public class ChatController {
             @RequestBody java.util.Map<String, String> request,
             @RequestHeader("X-Chat-Token") String token) {
         try {
-            String userUuid = validateToken(token);
+            UserTokenInfo tokenInfo = validateToken(token);
             String text = request.get("text");
             if (text == null || text.trim().isEmpty()) {
                 return ResponseEntity.badRequest().build();
             }
 
-            byte[] audioData = cozeProxyService.textToSpeech(text, userUuid);
+            byte[] audioData = cozeProxyService.textToSpeech(text, tokenInfo.cozeToken());
             return ResponseEntity.ok()
                     .contentType(MediaType.parseMediaType("audio/mpeg"))
                     .body(audioData);
@@ -160,12 +169,12 @@ public class ChatController {
             @RequestParam("file") org.springframework.web.multipart.MultipartFile file,
             @RequestHeader("X-Chat-Token") String token) {
         try {
-            String userUuid = validateToken(token);
+            UserTokenInfo tokenInfo = validateToken(token);
             if (file.isEmpty()) {
                 return ResponseEntity.badRequest().body("{\"error\":\"File is required\"}");
             }
 
-            String jsonResult = cozeProxyService.speechToText(file, userUuid);
+            String jsonResult = cozeProxyService.speechToText(file, tokenInfo.cozeToken());
             return ResponseEntity.ok()
                     .contentType(MediaType.APPLICATION_JSON)
                     .body(jsonResult);
