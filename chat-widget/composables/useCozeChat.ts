@@ -119,6 +119,9 @@ export function useCozeChat(sessionName: string) {
   }
 
   // 获取鉴权接口地址 (产业互联网后端)
+  // TODO [生产环境] 将 chatAuthUrl 配置为真实的业务方后端地址
+  // 默认值指向 Mock 接口，仅用于开发测试
+  // 生产环境示例: https://your-business-backend.com/api/chat/init
   const getAuthUrl = (): string => {
     return (config.public.chatAuthUrl as string) || 'http://localhost:8081/api/mock/website-a/init'
   }

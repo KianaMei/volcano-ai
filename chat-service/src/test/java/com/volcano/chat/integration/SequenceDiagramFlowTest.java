@@ -140,9 +140,12 @@ class SequenceDiagramFlowTest {
         UserTokenInfo tokenInfo = userTokenService.getUserTokenInfo(jwtToken);
         assertNotNull(tokenInfo, "Redis 中应存在用户信息");
         assertEquals(TEST_PHONE, tokenInfo.phone(), "手机号应匹配");
+        assertNotNull(tokenInfo.sessionId(), "Session ID 应存在");
         
         cozeToken = tokenInfo.cozeToken();
+        testSessionId = tokenInfo.sessionId();  // 使用 Redis 中的 sessionId
         System.out.println("  ✓ Redis 存储验证: phone=" + tokenInfo.phone());
+        System.out.println("  ✓ Session ID 生成成功: " + tokenInfo.sessionId());
         if (cozeToken != null && !cozeToken.isEmpty()) {
             System.out.println("  ✓ Coze Token 获取成功: " + cozeToken.substring(0, Math.min(20, cozeToken.length())) + "...");
         } else {
@@ -164,12 +167,13 @@ class SequenceDiagramFlowTest {
         System.out.println("步骤6: 前端发送消息 (SSE Request)");
         
         assertNotNull(jwtToken, "需要先执行阶段一测试");
+        assertNotNull(testSessionId, "Session ID 应在阶段一生成");
         
-        testSessionId = "test-conv-" + System.currentTimeMillis();
         String message = "你好";
         
         System.out.println("  请求头: X-Chat-Token: " + jwtToken.substring(0, 20) + "...");
-        System.out.println("  请求体: {message: \"" + message + "\", conversationId: \"" + testSessionId + "\"}");
+        System.out.println("  请求体: {message: \"" + message + "\"}");
+        System.out.println("  Session ID (来自 Redis): " + testSessionId);
         
         System.out.println("\n步骤7: 校验 Token (Redis)");
         
@@ -220,7 +224,8 @@ class SequenceDiagramFlowTest {
         cozeProxyService.sendMessage(
                 chatRequest, 
                 tokenInfo.phone(), 
-                tokenInfo.cozeToken()
+                tokenInfo.cozeToken(),
+                tokenInfo.sessionId()
         );
         
         System.out.println("  ✓ SseEmitter 创建成功，SSE 流在后台执行");

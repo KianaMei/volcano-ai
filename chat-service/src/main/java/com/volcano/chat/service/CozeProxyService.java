@@ -99,8 +99,9 @@ public class CozeProxyService {
      * @param request 聊天请求
      * @param userPhone 用户标识（手机号）
      * @param cozeToken 已缓存的 Coze OAuth Token
+     * @param sessionId 会话 ID（与 Token 生命周期绑定，用于聚合同一会话的聊天记录）
      */
-    public SseEmitter sendMessage(ChatRequest request, String userPhone, String cozeToken) {
+    public SseEmitter sendMessage(ChatRequest request, String userPhone, String cozeToken, String sessionId) {
         SseEmitter emitter = new SseEmitter(emitterTimeoutMs <= 0 ? 0L : emitterTimeoutMs);
 
         if (sseLimiter == null || !sseLimiter.tryAcquire()) {
@@ -143,18 +144,20 @@ public class CozeProxyService {
             releasePermit.run();
         });
 
+        // 使用传入的 sessionId（与 Token 生命周期绑定），而非 request 中的 conversationId
+        final String finalSessionId = sessionId;
+
         try {
             executor.execute(() -> {
                 HttpURLConnection connection = null;
                 LocalDateTime requestTime = LocalDateTime.now();
                 StringBuilder aiAnswerBuilder = new StringBuilder();
                 String userQuestion = request.getMessage();
-                String sessionId = request.getConversationId();
                 Long chatLogId = null;
                 
                 try {
                 // ========== 步骤8: 先插入问题记录到数据库 (Insert Q) ==========
-                chatLogId = insertQuestionLog(userPhone, sessionId, userQuestion, requestTime);
+                chatLogId = insertQuestionLog(userPhone, finalSessionId, userQuestion, requestTime);
                 
                 // 构建请求体
                 Map<String, Object> body = new HashMap<>();

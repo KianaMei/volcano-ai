@@ -19,9 +19,12 @@ import java.util.Date;
 public class JwtUtil {
 
     // JWT 有效时间：30分钟
+    // TODO [生产环境] 根据安全需求调整 Token 有效期
     private static final long EXPIRE_TIME_MS = 30 * 60 * 1000L;
 
-    // 密钥（生产环境应从配置文件读取）
+    // TODO [生产环境] 必须修改！将密钥移至配置文件或环境变量
+    // 示例: @Value("${jwt.secret}") 或 System.getenv("JWT_SECRET")
+    // 密钥长度建议至少 256 位 (32 字节)
     private static final String SECRET = "volcano-chat-service-jwt-secret-key-2024";
     private static final SecretKey SECRET_KEY = Keys.hmacShaKeyFor(SECRET.getBytes(StandardCharsets.UTF_8));
 

@@ -69,10 +69,11 @@ public class ChatController {
             return sendErrorEmitter(e.getMessage());
         }
 
-        log.info("Received chat request for user: {}...", 
-                tokenInfo.phone().substring(0, Math.min(4, tokenInfo.phone().length())));
+        log.info("Received chat request for user: {}..., sessionId: {}", 
+                tokenInfo.phone().substring(0, Math.min(4, tokenInfo.phone().length())),
+                tokenInfo.sessionId());
 
-        return cozeProxyService.sendMessage(request, tokenInfo.phone(), tokenInfo.cozeToken());
+        return cozeProxyService.sendMessage(request, tokenInfo.phone(), tokenInfo.cozeToken(), tokenInfo.sessionId());
     }
 
     /**

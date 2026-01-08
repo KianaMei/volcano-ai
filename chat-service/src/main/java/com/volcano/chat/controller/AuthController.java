@@ -37,7 +37,10 @@ public class AuthController {
      * 3. 将 {phone, cozeToken} 存入 Redis，Key 为 JWT Token
      * 4. 返回 JWT Token
      * 
-     * 真实场景下应添加 IP 白名单或服务间鉴权
+     * TODO [生产环境] 添加安全措施：
+     * 1. 配置 IP 白名单，仅允许业务方后端服务器访问
+     * 2. 或添加服务间鉴权 (如 API Key、mTLS)
+     * 3. 考虑将此接口移至独立的内部端口
      */
     @PostMapping("/internal/session/create")
     public Map<String, Object> createSession(@RequestBody Map<String, String> request) {
@@ -58,12 +61,18 @@ public class AuthController {
     /**
      * Mock 接口：模拟业务方后端
      * 前端直接调这个接口，假装自己通过了 Cookie 验证
+     * 
+     * TODO [生产环境] 此接口仅用于开发测试，生产环境应：
+     * 1. 删除或禁用此 Mock 接口
+     * 2. 前端 chatAuthUrl 改为指向真实的业务方后端
+     * 3. 业务方后端验证用户身份后调用 /api/internal/session/create
      */
     @PostMapping("/mock/website-a/init")
     public Map<String, Object> mockWebsiteAInit() {
         // 模拟业务方后端逻辑：
         // 1. 验证 Cookie... (省略)
         // 2. 获取到当前登录用户是 "13800138000"
+        // TODO [生产环境] 此处硬编码手机号仅用于测试，生产环境应删除此接口
         String currentUserPhone = "13800138000";
 
         // 3. 调用 UserTokenService 生成 JWT Token

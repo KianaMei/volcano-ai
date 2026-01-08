@@ -116,10 +116,12 @@ class RealSequenceDiagramFlowTest {
         
         assertNotNull(tokenInfo, "Redis 中应存在用户信息");
         assertEquals(TEST_PHONE, tokenInfo.phone(), "手机号应匹配");
+        assertNotNull(tokenInfo.sessionId(), "Session ID 应存在");
         
         // Coze Token 可能为空（如果 OAuth 未配置）
         System.out.println("Redis 存储验证:");
         System.out.println("  - phone: " + tokenInfo.phone());
+        System.out.println("  - sessionId: " + tokenInfo.sessionId());
         System.out.println("  - cozeToken: " + (tokenInfo.cozeToken() != null ? 
                 tokenInfo.cozeToken().substring(0, Math.min(20, tokenInfo.cozeToken().length())) + "..." : "null (OAuth未配置)"));
         System.out.println("✓ Redis 存储验证通过");

@@ -16,7 +16,7 @@ import java.util.concurrent.TimeUnit;
 
 /**
  * 基于 Redis 的用户 Token 信息管理服务实现
- * 使用 Hash 结构存储：Key = JWT Token, Fields = {phone, cozeToken}
+ * 使用 Hash 结构存储：Key = JWT Token, Fields = {phone, cozeToken, sessionId}
  */
 @Slf4j
 @Service
@@ -32,6 +32,7 @@ public class RedisUserTokenService implements UserTokenService {
     
     private static final String FIELD_PHONE = "phone";
     private static final String FIELD_COZE_TOKEN = "cozeToken";
+    private static final String FIELD_SESSION_ID = "sessionId";
 
     @Override
     public String createUserToken(String phone) {
@@ -45,19 +46,36 @@ public class RedisUserTokenService implements UserTokenService {
 
         // 调用 CozeAccessTokenProvider 获取 Coze Token
         String cozeToken = fetchCozeToken(phone);
+        
+        // 生成 Session ID：sess-{手机号后4位}-{时间戳}
+        String sessionId = generateSessionId(phone);
 
         // 使用 Hash 存储
         Map<String, String> tokenData = new HashMap<>();
         tokenData.put(FIELD_PHONE, phone);
         tokenData.put(FIELD_COZE_TOKEN, cozeToken != null ? cozeToken : "");
+        tokenData.put(FIELD_SESSION_ID, sessionId);
 
         redisTemplate.opsForHash().putAll(key, tokenData);
         redisTemplate.expire(key, TOKEN_EXPIRE_SECONDS, TimeUnit.SECONDS);
 
-        log.info("Created user token for phone: {}..., TTL: {}s",
-                phone.substring(0, Math.min(4, phone.length())), TOKEN_EXPIRE_SECONDS);
+        log.info("Created user token for phone: {}..., sessionId: {}, TTL: {}s",
+                phone.substring(0, Math.min(4, phone.length())), sessionId, TOKEN_EXPIRE_SECONDS);
 
         return jwtToken;
+    }
+    
+    /**
+     * 生成 Session ID
+     * 格式: sess-{手机号后4位}-{Unix时间戳}
+     * 示例: sess-8000-1704700800
+     */
+    private String generateSessionId(String phone) {
+        String phoneSuffix = phone.length() >= 4 
+                ? phone.substring(phone.length() - 4) 
+                : phone;
+        long timestamp = System.currentTimeMillis() / 1000;
+        return String.format("sess-%s-%d", phoneSuffix, timestamp);
     }
 
     @Override
@@ -75,8 +93,9 @@ public class RedisUserTokenService implements UserTokenService {
 
         String phone = data.get(FIELD_PHONE) != null ? data.get(FIELD_PHONE).toString() : null;
         String cozeToken = data.get(FIELD_COZE_TOKEN) != null ? data.get(FIELD_COZE_TOKEN).toString() : null;
+        String sessionId = data.get(FIELD_SESSION_ID) != null ? data.get(FIELD_SESSION_ID).toString() : null;
         
-        return new UserTokenInfo(phone, cozeToken);
+        return new UserTokenInfo(phone, cozeToken, sessionId);
     }
 
     @Override
