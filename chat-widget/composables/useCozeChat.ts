@@ -631,6 +631,7 @@ export function useCozeChat(sessionName: string) {
       const wsUrl = `${wsBaseUrl}/api/chat/ws/tts?token=${encodeURIComponent(token)}`
 
       const ws = new WebSocket(wsUrl)
+      let wsEventSeq = 0
 
       let audioContext: AudioContext | null = null
       let nextStartTime = 0
@@ -638,6 +639,15 @@ export function useCozeChat(sessionName: string) {
       let isPlaying = false
       let currentSource: AudioBufferSourceNode | null = null
       let stopped = false
+
+      // 提前设置 currentAudio，避免消息被忽略
+      currentAudio = {
+        ws,
+        getAudioContext: () => audioContext,
+        getCurrentSource: () => currentSource,
+        getAudioQueue: () => audioQueue,
+        setStopped: (val: boolean) => { stopped = val }
+      }
 
       const playNextBuffer = () => {
         if (stopped || !audioContext || audioQueue.length === 0) {
@@ -668,49 +678,60 @@ export function useCozeChat(sessionName: string) {
       }
 
       ws.onopen = async () => {
-        audioContext = createAudioContext()
-        nextStartTime = audioContext.currentTime
-
-        try {
-          if (audioContext.state === 'suspended') {
-            await audioContext.resume()
-          }
-        } catch { }
-
-        const voiceId = (config.public.cozeVoiceId as string) || ''
-        const outputAudio: any = {
-          codec: 'pcm',
-          pcm_config: { sample_rate: outputSampleRate },
-          speech_rate: 0
-        }
-        if (voiceId) outputAudio.voice_id = voiceId
-
-        ws.send(JSON.stringify({
-          id: `config-${Date.now()}`,
-          event_type: 'speech.update',
-          data: { output_audio: outputAudio }
-        }))
-
-        const chunks = text.match(/.{1,500}/g) || [text]
-        chunks.forEach((chunk) => {
-          ws.send(JSON.stringify({
-            id: `text-${Date.now()}`,
-            event_type: 'input_text_buffer.append',
-            data: { delta: chunk }
-          }))
-        })
-
-        ws.send(JSON.stringify({
-          id: `complete-${Date.now()}`,
-          event_type: 'input_text_buffer.complete'
-        }))
+        console.log('[TTS] connected')
       }
 
-      ws.onmessage = (event) => {
+      ws.onmessage = async (event) => {
         if (!currentAudio || currentAudio.ws !== ws) return
 
         try {
+          if (typeof event.data !== 'string') {
+            return
+          }
           const msg = JSON.parse(event.data)
+
+          // 处理连接就绪事件
+          if (msg.event_type === 'connection.ready') {
+            audioContext = createAudioContext()
+            nextStartTime = audioContext.currentTime
+
+            try {
+              if (audioContext.state === 'suspended') {
+                await audioContext.resume()
+              }
+            } catch { }
+
+            const voiceId = (config.public.cozeVoiceId as string) || ''
+            const outputAudio: any = {
+              codec: 'pcm',
+              pcm_config: { sample_rate: outputSampleRate },
+              speech_rate: 0
+            }
+            if (voiceId) outputAudio.voice_id = voiceId
+
+            const configPayload = {
+              id: `config-${Date.now()}-${wsEventSeq++}`,
+              event_type: 'speech.update',
+              data: { output_audio: outputAudio }
+            }
+            ws.send(JSON.stringify(configPayload))
+
+            const chunks = text.match(/.{1,500}/g) || [text]
+            chunks.forEach((chunk) => {
+              ws.send(JSON.stringify({
+                id: `text-${Date.now()}-${wsEventSeq++}`,
+                event_type: 'input_text_buffer.append',
+                data: { delta: chunk }
+              }))
+            })
+
+            const completePayload = {
+              id: `complete-${Date.now()}-${wsEventSeq++}`,
+              event_type: 'input_text_buffer.complete'
+            }
+            ws.send(JSON.stringify(completePayload))
+            return
+          }
 
           if (msg.event_type === 'speech.audio.update' && msg.data?.delta) {
             const binaryStr = atob(msg.data.delta)
@@ -742,13 +763,15 @@ export function useCozeChat(sessionName: string) {
         }
       }
 
-      ws.onerror = () => {
+      ws.onerror = (event) => {
         if (!currentAudio || currentAudio.ws !== ws) return
+        console.error('[TTS] error', event)
         stopSpeaking()
       }
 
-      ws.onclose = () => {
+      ws.onclose = (event) => {
         if (!currentAudio || currentAudio.ws !== ws) return
+        console.log('[TTS] closed', event.code, event.reason)
 
         const checkComplete = () => {
           if (audioQueue.length === 0 && !isPlaying) {
@@ -766,14 +789,6 @@ export function useCozeChat(sessionName: string) {
           }
         }
         checkComplete()
-      }
-
-      currentAudio = {
-        ws,
-        getAudioContext: () => audioContext,
-        getCurrentSource: () => currentSource,
-        getAudioQueue: () => audioQueue,
-        setStopped: (val: boolean) => { stopped = val }
       }
 
     } catch (e) {

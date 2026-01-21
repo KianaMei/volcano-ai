@@ -5,11 +5,11 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import org.springframework.web.socket.*;
-import org.springframework.web.socket.client.WebSocketClient;
 import org.springframework.web.socket.client.standard.StandardWebSocketClient;
 import org.springframework.web.socket.handler.TextWebSocketHandler;
 
 import java.io.IOException;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
@@ -40,14 +40,28 @@ public class CozeTtsWebSocketHandler extends TextWebSocketHandler {
             return;
         }
 
-        WebSocketClient client = new StandardWebSocketClient();
+        StandardWebSocketClient client = new StandardWebSocketClient();
+        int bufferSize = 16 * 1024 * 1024;
+        Map<String, Object> userProperties = new HashMap<>();
+        userProperties.put("org.apache.tomcat.websocket.textBufferSize", bufferSize);
+        userProperties.put("org.apache.tomcat.websocket.binaryBufferSize", bufferSize);
+        client.setUserProperties(userProperties);
         String cozeUrl = "wss://ws.coze.cn/v1/audio/speech?authorization=Bearer " + tokenResp.getAccessToken();
 
-        client.doHandshake(new WebSocketHandler() {
+        client.execute(new WebSocketHandler() {
             @Override
             public void afterConnectionEstablished(WebSocketSession cozeSession) throws Exception {
                 log.info("Coze TTS connection established for user: {}", userSession.getId());
+                cozeSession.setTextMessageSizeLimit(bufferSize);
+                cozeSession.setBinaryMessageSizeLimit(bufferSize);
                 cozeSessions.put(userSession.getId(), cozeSession);
+                
+                // 通知前端连接已就绪
+                if (userSession.isOpen()) {
+                    userSession.setTextMessageSizeLimit(bufferSize);
+                    userSession.setBinaryMessageSizeLimit(bufferSize);
+                    userSession.sendMessage(new TextMessage("{\"event_type\":\"connection.ready\"}"));
+                }
             }
 
             @Override
@@ -67,6 +81,8 @@ public class CozeTtsWebSocketHandler extends TextWebSocketHandler {
 
             @Override
             public void afterConnectionClosed(WebSocketSession cozeSession, CloseStatus closeStatus) throws Exception {
+                log.info("Coze TTS connection closed, session={}, code={}, reason={}",
+                        cozeSession.getId(), closeStatus.getCode(), closeStatus.getReason());
                 if (userSession.isOpen()) {
                     userSession.close(closeStatus);
                 }
@@ -88,13 +104,13 @@ public class CozeTtsWebSocketHandler extends TextWebSocketHandler {
         WebSocketSession cozeSession = cozeSessions.get(userSession.getId());
         if (cozeSession != null && cozeSession.isOpen()) {
             cozeSession.sendMessage(message);
-        } else {
-            log.warn("Coze session not ready for user: {}", userSession.getId());
         }
     }
 
     @Override
     public void afterConnectionClosed(WebSocketSession userSession, CloseStatus status) throws Exception {
+        log.info("TTS connection closed, session={}, code={}, reason={}",
+                userSession.getId(), status.getCode(), status.getReason());
         WebSocketSession cozeSession = cozeSessions.remove(userSession.getId());
         if (cozeSession != null && cozeSession.isOpen()) {
             cozeSession.close();
